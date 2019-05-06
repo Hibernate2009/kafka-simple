@@ -1,0 +1,101 @@
+package ru.alfastrah.interplat.bus.kafka.stringAgg;
+
+import org.apache.kafka.common.serialization.Serde;
+import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.streams.KafkaStreams;
+import org.apache.kafka.streams.StreamsBuilder;
+import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.kstream.*;
+import org.apache.kafka.streams.state.WindowStore;
+
+import java.time.Duration;
+import java.util.Properties;
+
+import static java.time.Duration.ofMinutes;
+import static java.time.Duration.ofSeconds;
+import static org.apache.kafka.streams.kstream.Suppressed.BufferConfig.unbounded;
+
+public class App2 {
+
+    public static void main(String[] args) {
+
+        Properties props = new Properties();
+        props.put(StreamsConfig.APPLICATION_ID_CONFIG, "streams-wordcount");
+        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        props.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
+        props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
+        props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
+
+        final Serde<String> stringSerde = Serdes.String();
+        StreamsBuilder builder = new StreamsBuilder();
+        final KStream<String, String> incomingMessageStream = builder.stream("messages", Consumed.with(stringSerde, stringSerde));
+
+
+        //KGroupedStream<String, String> groupedStream = incomingMessageStream.groupByKey();
+
+        KGroupedStream<String, String> groupedStream = incomingMessageStream.groupBy(
+                (key, value) -> value,
+                Grouped.with(
+                        Serdes.String(), /* key (note: type was modified) */
+                        Serdes.String())  /* value */
+        );
+
+
+        /*TimeWindowedKStream<String, String> windowed =
+                incomingMessageStream.groupByKey()
+                        .windowedBy(TimeWindows.of(Duration.ofSeconds(20)));*/
+
+
+
+        // Aggregating with time-based windowing (here: with 5-minute tumbling windows)
+        KTable<Windowed<String>, String> timeWindowedAggregatedStream = groupedStream.windowedBy(TimeWindows.of(ofMinutes(1)).grace(ofSeconds(1)))
+                .aggregate(
+                        new Initializer<String>() { /* initializer */
+                            @Override
+                            public String apply() {
+                                return "";
+                            }
+                        },
+                        new Aggregator<String, String, String>() { /* adder */
+                            @Override
+                            public String apply(String aggKey, String newValue, String aggValue) {
+                                System.out.println(aggValue + newValue);
+                                return aggValue + newValue;
+                            }
+                        },
+                        Materialized.<String, String, WindowStore<Bytes, byte[]>>as("time-windowed-aggregated-stream-store")
+                                .withValueSerde(Serdes.String()));
+
+        timeWindowedAggregatedStream.suppress(Suppressed.untilWindowCloses(unbounded()))
+        .toStream().print(Printed.toSysOut());
+
+        final KafkaStreams streams = new KafkaStreams(builder.build(), props);
+        streams.start();
+
+        Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
+
+
+
+        /*KGroupedStream<String, String> groupedStream = incomingMessageStream.groupByKey();
+        groupedStream.windowedBy(SessionWindows.with(Duration.ofSeconds(3)).grace(Duration.ofSeconds(3)))
+                .filter((windowedUserId, count) -> count < 3)
+                .aggregate(() -> {...})
+                .suppress(Suppressed.untilWindowCloses(unbounded()))
+                .toStream();
+
+
+        KGroupedStream<String, String> grouped = incomingMessageStream.groupByKey()
+                .windowedBy(TimeWindows.of(Duration.ofMinutes(10)).grace(ofMinutes(10)))
+                .aggregate(
+                        MessageAggregator::new,
+                        (key, value, logAgg) -> logAgg.add(value),
+                        Materialized.as("message-input-stream-aggregated").suppress(Suppressed.untilWindowCloses(unbounded()))
+                                .toStream()
+                                .foreach(e -> sendAlert(e));*/
+
+
+    }
+
+
+}
